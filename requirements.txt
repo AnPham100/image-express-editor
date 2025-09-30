@@ -1,0 +1,36 @@
+# M1 MacBook Pro Requirements
+
+# Core ML Framework with MPS support
+torch
+torchvision
+git+https://github.com/facebookresearch/segment-anything-2
+
+# Computer Vision
+opencv-python
+pillow
+
+# Scientific Computing  
+numpy<2  # For compatibility purposes
+scipy
+
+# Hugging Face ecosystem
+# transformers  # Latest = transformers-4.56.2 --> Incompatible issues: post_process_grounded_object_detection() got an unexpected keyword argument 'box_threshold'
+transformers==4.48.3  # Specific version to avoid compatibility issues
+diffusers
+accelerate
+safetensors
+
+# Background removal
+rembg
+onnxruntime  # Required for rembg
+
+# OCR
+easyocr
+pytesseract
+
+# Streamlit and web framework
+streamlit
+
+# Utilities
+requests
+urllib3
