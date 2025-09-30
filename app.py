@@ -68,15 +68,39 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # Environment Detection and Configuration
 
-# Detect if running on Streamlit Cloud
-IS_STREAMLIT_CLOUD = (
-    os.getenv('STREAMLIT_SHARING') or 
-    os.getenv('STREAMLIT_CLOUD') or 
-    'streamlit.io' in os.getenv('HOSTNAME', '') or
-    'streamlit-app' in os.getenv('HOSTNAME', '') or
-    os.getenv('STREAMLIT_SERVER_PORT')
-)
-logger.info(f"IS_STREAMLIT_CLOUD: {IS_STREAMLIT_CLOUD}")
+# Detect if running on Streamlit Cloud using multiple methods
+def detect_streamlit_cloud():
+    """
+    Detect if running on Streamlit Cloud using multiple reliable methods.
+    Based on: https://discuss.streamlit.io/t/check-if-run-local-or-at-share-streamlit-io/11841
+    """   
+    # Method 1: Check hostname patterns
+    hostname = os.getenv('HOSTNAME', '').lower()
+    if any(pattern in hostname for pattern in ['streamlit', 'share-streamlit', 'streamlitapp']):
+        logger.info(f"Detected Streamlit Cloud via hostname: {hostname}")
+        return True
+
+    # Method 2: Check for Streamlit Cloud specific environment variables
+    cloud_env_vars = [
+        'STREAMLIT_SHARING',
+        'STREAMLIT_CLOUD', 
+        'STREAMLIT_SERVER_PORT',
+        'STREAMLIT_BROWSER_GATHER_USAGE_STATS'
+    ]
+    for var in cloud_env_vars:
+        if os.getenv(var):
+            logger.info(f"Detected Streamlit Cloud via env var: {var}")
+            return True
+
+    # Method 3: Check current working directory patterns
+    cwd = os.getcwd().lower()
+    if any(pattern in cwd for pattern in ['/mount/src', 'streamlit']):
+        logger.info(f"Detected possible Streamlit Cloud via CWD: {cwd}")
+        return True
+
+    return False
+
+IS_STREAMLIT_CLOUD = detect_streamlit_cloud()
 
 # -----------------------------------------------------------------------------
 # AI Model Configuration - Enable/Disable Models
@@ -98,21 +122,21 @@ ENABLE_SDXL_INPAINT = True             # SDXL Inpainting for AI-powered inpainti
 
 # Development flags
 DEVELOPMENT_MODE = True
-logger.info(f"DEVELOPMENT_MODE: {DEVELOPMENT_MODE}")
 
 # Streamlit Cloud lightweight mode
 if IS_STREAMLIT_CLOUD:
-    # Disable all heavy models to avoid memory issues
+    ENABLE_SAM2 = False
     ENABLE_SDXL_CONTROLNET = False
     ENABLE_SDXL_TXT2IMG = False
     ENABLE_SDXL_INPAINT = False
+    logger.info("🌐 Streamlit Cloud mode: All heavy AI models disabled")
 
 # Local development mode
 elif DEVELOPMENT_MODE:
-    # Disable some heavy models for faster startup
     ENABLE_SDXL_CONTROLNET = False
     ENABLE_SDXL_TXT2IMG = False
     ENABLE_SDXL_INPAINT = False
+    logger.info("🚧 Development mode: Some heavy models disabled for faster startup")
 
 # -----------------------------------------------------------------------------
 # Configuration
