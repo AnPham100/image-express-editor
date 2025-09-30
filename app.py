@@ -68,19 +68,44 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # Environment Detection and Configuration
 
-# Detect if running on Streamlit Cloud using multiple methods
 def detect_streamlit_cloud():
     """
-    Detect if running on Streamlit Cloud using multiple reliable methods.
+    Detect if running on Streamlit Cloud using multiple methods.
     Based on: https://discuss.streamlit.io/t/check-if-run-local-or-at-share-streamlit-io/11841
-    """   
-    # Method 1: Check hostname patterns
+    """
+    # Method 1: Check platform.processor() - returns empty string on Streamlit Cloud
+    try:
+        processor = platform.processor()
+        if not processor or processor.strip() == "":
+            logger.info("Detected Streamlit Cloud: platform.processor() returns empty")
+            return True
+        else:
+            logger.info(f"Normal environment detected: platform.processor() = '{processor}'")
+    except Exception as e:
+        logger.warning(f"Failed to check processor: {e}")
+
+    # Method 2: Check public IP address (Streamlit Cloud has public IP)
+    try:
+        import socket
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        
+        # Local development typically uses localhost/127.0.0.1 or private IPs
+        if local_ip.startswith(('127.', '192.168.', '10.', '172.')):
+            logger.info(f"Local detected: private IP {local_ip}")
+        else:
+            logger.info(f"Possible cloud detected: public/unknown IP {local_ip}")
+            # Don't return True here as this could be a false positive
+    except Exception as e:
+        logger.warning(f"Failed to check IP: {e}")
+
+    # Method 3: Check hostname patterns
     hostname = os.getenv('HOSTNAME', '').lower()
     if any(pattern in hostname for pattern in ['streamlit', 'share-streamlit', 'streamlitapp']):
         logger.info(f"Detected Streamlit Cloud via hostname: {hostname}")
         return True
 
-    # Method 2: Check for Streamlit Cloud specific environment variables
+    # Method 4: Check for Streamlit Cloud specific environment variables
     cloud_env_vars = [
         'STREAMLIT_SHARING',
         'STREAMLIT_CLOUD', 
@@ -91,13 +116,7 @@ def detect_streamlit_cloud():
         if os.getenv(var):
             logger.info(f"Detected Streamlit Cloud via env var: {var}")
             return True
-
-    # Method 3: Check current working directory patterns
-    cwd = os.getcwd().lower()
-    if any(pattern in cwd for pattern in ['/mount/src', 'streamlit']):
-        logger.info(f"Detected possible Streamlit Cloud via CWD: {cwd}")
-        return True
-
+    
     return False
 
 IS_STREAMLIT_CLOUD = detect_streamlit_cloud()
