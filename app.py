@@ -58,8 +58,25 @@ try:
     import shutil  # For disk usage
 except ImportError:
     shutil = None
-    
+
 import platform  # For system information
+
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# Environment Detection and Configuration
+
+# Detect if running on Streamlit Cloud
+IS_STREAMLIT_CLOUD = (
+    os.getenv('STREAMLIT_SHARING') or 
+    os.getenv('STREAMLIT_CLOUD') or 
+    'streamlit.io' in os.getenv('HOSTNAME', '') or
+    'streamlit-app' in os.getenv('HOSTNAME', '') or
+    os.getenv('STREAMLIT_SERVER_PORT')
+)
+logger.info(f"IS_STREAMLIT_CLOUD: {IS_STREAMLIT_CLOUD}")
 
 # -----------------------------------------------------------------------------
 # AI Model Configuration - Enable/Disable Models
@@ -81,18 +98,24 @@ ENABLE_SDXL_INPAINT = True             # SDXL Inpainting for AI-powered inpainti
 
 # Development flags
 DEVELOPMENT_MODE = True
-if DEVELOPMENT_MODE:
-    # - Disable heavy models for faster development
+logger.info(f"DEVELOPMENT_MODE: {DEVELOPMENT_MODE}")
+
+# Streamlit Cloud lightweight mode
+if IS_STREAMLIT_CLOUD:
+    # Disable all heavy models to avoid memory issues
     ENABLE_SDXL_CONTROLNET = False
-    # ENABLE_SDXL_TXT2IMG = False
+    ENABLE_SDXL_TXT2IMG = False
     ENABLE_SDXL_INPAINT = False
-    # ENABLE_SAM2 = False
+
+# Local development mode
+elif DEVELOPMENT_MODE:
+    # Disable some heavy models for faster startup
+    ENABLE_SDXL_CONTROLNET = False
+    ENABLE_SDXL_TXT2IMG = False
+    ENABLE_SDXL_INPAINT = False
 
 # -----------------------------------------------------------------------------
 # Configuration
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # UI Settings
 DEFAULT_LOG_DISPLAY_LIMIT = 10  # Number of logs to show by default
@@ -2985,6 +3008,32 @@ def process_single_operation(
         )
 
     try:
+        # Check if models are available for the operation
+        required_models = {
+            "detect_objects": ["retinanet", "grounding_dino"],
+            "detect_license_plates": ["retinanet", "grounding_dino"],
+            "remove_background": ["rembg"],
+            "segment_objects": ["sam2"],
+            "create_mask": ["sam2", "retinanet", "grounding_dino"],
+            "extract_objects": ["sam2", "retinanet", "grounding_dino"],
+            "image_to_image": ["sdxl"],
+            "generate_from_control": ["sdxl"],
+            "outpaint_image": ["sdxl_inpaint"],
+            "inpaint_regions": ["sdxl_inpaint"]
+        }
+        if operation in required_models:
+            available_models = [m for m in required_models[operation] if models and models.get(m) is not None]
+            if not available_models:
+                error_msg = f"AI models required for '{operation}' are not available."
+                error_msg += f" Required models: {', '.join(required_models[operation])}. Please check model loading."
+                return update_message_with_result(
+                    message, operation, {
+                        'status': 'ERROR',
+                        'status_msg': error_msg,
+                        'processed_duration_seconds': 0
+                    }
+                )
+
         # Condition: Require source image
         source_image = get_latest_image_from_message(message)
         if source_image is None:
@@ -2992,7 +3041,7 @@ def process_single_operation(
                 message, operation, {
                     'status': 'ERROR',
                     'status_msg': 'No image found',
-                    'processed_duration_seconds': time.time() - start_time
+                    'processed_duration_seconds': 0
                 }
             )
         
@@ -4457,7 +4506,7 @@ def process_combined_operation(
             # Create initial message
             message = create_pipeline_message(source_image_id, operation_chain, operation_params)
             
-            # Step 1: Detect objects (preserve detection data for later compositing)
+            # Step 1: Detect objects
             step1_result = process_single_operation(
                 "detect_objects",
                 models=models,
@@ -4467,7 +4516,7 @@ def process_combined_operation(
             if step1_result['status'] != 'OK':
                 return step1_result
             
-            # Step 2: Inpaint background areas (with object preservation logic)
+            # Step 2: Inpaint background areas
             return process_single_operation(
                 "inpaint_regions",
                 models=models,
@@ -4477,43 +4526,40 @@ def process_combined_operation(
         # ___ Combined Operation: Edge Map and Image Generation ___            
         elif operation == "extract_generate_objects":
             # Define operation chain and prepare parameters
-            operation_chain = ["create_edge_map", "generate_from_control"] if models.get('sdxl') else ["create_edge_map"]
+            operation_chain = ["create_edge_map", "generate_from_control"]
             operation_params = {
                 "create_edge_map": {
                     'sigma': params.get('sigma', 0.33),
                     'edge_thickness': params.get('edge_thickness', 1)
-                }
-            }
-            
-            if models.get('sdxl'):
-                operation_params["generate_from_control"] = {
+                },
+                "generate_from_control": {
                     'prompt': params.get('prompt', 'high quality professional image'),
                     'style_type': params.get('style_type', 'realistic'),
                     'controlnet_scale': params.get('controlnet_scale', 0.8),
                     'inference_steps': params.get('inference_steps', 20)
                 }
-            
+            }
+
             # Create initial message
             message = create_pipeline_message(source_image_id, operation_chain, operation_params)
-            
+
             # Step 1: Create edge map
             step1_result = process_single_operation(
                 "create_edge_map", 
                 models=models, 
                 message=message
             )
-            
+
             if step1_result['status'] != 'OK':
                 return step1_result
 
-            # Step 2: Generate image using edge map (if SDXL is available)
-            if models.get('sdxl'):
-                return process_single_operation(
-                    "generate_from_control", 
-                    models=models, 
-                    message=step1_result
-                )
-        
+            # Step 2: Generate image using edge map
+            return process_single_operation(
+                "generate_from_control", 
+                models=models, 
+                message=step1_result
+            )
+
         else:
             # Update & return message with error
             return update_message_with_result(
@@ -5897,35 +5943,31 @@ def main():
                     )
                     
                     # Generation settings
-                    if models.get('sdxl'):
-                        params['prompt'] = st.text_input(
-                            "Generation Prompt",
-                            "professional high quality architectural drawing, clean lines, detailed",
-                            help="Describe the style and content for the generated image"
-                        )
-                        
-                        params['style_type'] = st.selectbox(
-                            "Output Style",
-                            ["realistic", "cartoon"],
-                            help="Style for the generated image"
-                        )
-                        
-                        params['controlnet_scale'] = st.slider(
-                            "Guidance Scale",
-                            0.0, 1.5, 0.7,
-                            help="How closely to follow the edge map: 0.5 = loose, 0.7 = balanced, 1.2 = strict"
-                        )
-                        
-                        params['inference_steps'] = st.slider(
-                            "Inference Steps",
-                            1, 100, 12,
-                            help="Generation quality steps"
-                        )
-                        
-                        st.info("📝🎨 Process: Creates edge map from image → Uses edge map to guide AI image generation → Produces stylized result")
-                    else:
-                        st.warning("⚠️ SDXL not available - will only create edge map")
-                        st.info("📝 Process: Creates edge map from image (AI generation disabled)")
+                    params['prompt'] = st.text_input(
+                        "Generation Prompt",
+                        "professional high quality architectural drawing, clean lines, detailed",
+                        help="Describe the style and content for the generated image"
+                    )
+                    
+                    params['style_type'] = st.selectbox(
+                        "Output Style",
+                        ["realistic", "cartoon"],
+                        help="Style for the generated image"
+                    )
+                    
+                    params['controlnet_scale'] = st.slider(
+                        "Guidance Scale",
+                        0.0, 1.5, 0.7,
+                        help="How closely to follow the edge map: 0.5 = loose, 0.7 = balanced, 1.2 = strict"
+                    )
+                    
+                    params['inference_steps'] = st.slider(
+                        "Inference Steps",
+                        1, 100, 12,
+                        help="Generation quality steps"
+                    )
+                    
+                    st.info("📝🎨 Process: Creates edge map from image → Uses edge map to guide AI image generation → Produces stylized result")
 
                 # Process button
                 if st.button("🚀 Apply Operation", type="primary", width='stretch'):
